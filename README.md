@@ -270,6 +270,8 @@ make test-integration
 
 **Balance reversal on permanent failure** — When the operator returns a permanent error (e.g. invalid destination), the worker reverses the deduction via `ReverseDeductTx`, which is also idempotent (guarded by a unique constraint on `(message_id, tx_type)` in `balance_transactions`).
 
+**Per-user partition keying** — Kafka messages are keyed by `userID` (not `messageID`), so all messages for a given user land on the same partition and are consumed in submission order by a single worker goroutine. Balance deduction happens synchronously in the API transaction, not in the worker, so this ordering isn't required for deduction correctness. It's kept instead as a foundation for future per-user fairness/rate-limiting (noted in Known Limitations as not yet implemented) — without per-user ordering, a fairness mechanism can't reason about a user's message sequence. The trade-off is partition hotspotting: a small number of high-volume users can concentrate load on a few partitions rather than spreading evenly across all of them.
+
 ## Known Limitations
 
 - Mock operator only — no real telecom integration.
