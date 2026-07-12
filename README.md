@@ -274,4 +274,4 @@ make test-integration
 
 - Mock operator only — no real telecom integration.
 - No per-user rate limiting beyond queue priority weighting.
-- No refund sweep for messages that crash after balance deduction but before Kafka publish.
+- No refund sweep for messages that crash after balance deduction but before Kafka publish (Outbox Pattern candidate fix).
