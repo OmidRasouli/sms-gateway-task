@@ -16,6 +16,7 @@ type Enqueuer interface {
 }
 
 type Client struct {
+	brokers       []string
 	expressWriter *kafka.Writer
 	normalWriter  *kafka.Writer
 }
@@ -43,9 +44,18 @@ func NewClient(brokers []string) *Client {
 		}
 	}
 	return &Client{
+		brokers:       brokers,
 		expressWriter: newWriter(TopicExpress),
 		normalWriter:  newWriter(TopicNormal),
 	}
+}
+
+func (c *Client) Ping(ctx context.Context) error {
+	conn, err := kafka.DialContext(ctx, "tcp", c.brokers[0])
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func (c *Client) Close() error {

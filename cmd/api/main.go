@@ -49,7 +49,7 @@ func main() {
 	msgHandler := httphandler.NewMessageHandler(svc, messageRepo)
 	balHandler := httphandler.NewBalanceHandler(balanceRepo)
 
-	router := httphandler.NewRouter(msgHandler, balHandler)
+	router := httphandler.NewRouter(msgHandler, balHandler, pool, queueClient)
 
 	log.Printf("api listening on :%s", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {
