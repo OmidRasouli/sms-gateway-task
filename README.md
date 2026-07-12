@@ -4,25 +4,7 @@ A prepaid SMS gateway built in Go. Businesses top up a balance, then submit Norm
 
 ## Architecture
 
-```
-Client
-  │  HTTP
-  ▼
-API (Gin)
-  ├── Atomic balance deduction  ─┐
-  └── Message insert (pending)  ─┴─▶ PostgreSQL
-                                         │
-                  Kafka publish ◀────────┘
-                       │
-            ┌──────────┴──────────┐
-         sms.express           sms.normal
-            └──────────┬──────────┘
-                       ▼
-                   Worker
-                       ├── Operator (mock)
-                       ├── Update status → sent / failed
-                       └── On permanent failure → reverse balance deduction
-```
+![High-Level Architecture](docs/sms_gateway_hld.png)
 
 **Components:**
 
@@ -33,6 +15,14 @@ API (Gin)
 | **Kafka** | Two priority topics: `sms.express` and `sms.normal` (+ DLQ variants) |
 | **Worker** | Idempotent consumer — delivers to mock operator, updates status, reverses balance on permanent failure |
 | **Operator adapter** | Swappable interface; ships with a mock that simulates ~1% permanent and ~2% transient failures |
+
+### Success Flow
+
+![Success Sequence](docs/sms_gateway_success_sequence.png)
+
+### Failure & DLQ Flow
+
+![Failure and DLQ Flow](docs/sms_gateway_failure_dlq_flow.png)
 
 ## Prerequisites
 
