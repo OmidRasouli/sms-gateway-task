@@ -271,3 +271,8 @@ make test-integration
 - Mock operator only — no real telecom integration.
 - No per-user rate limiting beyond queue priority weighting.
 - No refund sweep for messages that crash after balance deduction but before Kafka publish (Outbox Pattern candidate fix).
+- Idempotent request timeouts are not implemented. If the API times out after deducting balance but before returning a response, the client may retry and see a `402 Insufficient Balance` even though the message was accepted. A real-world implementation would need a request ID or idempotency key to avoid this.
+- No correlation ID propagation from API to worker logs. In a production system, the API would generate a `X-Request-ID` header and pass it through Kafka headers to the worker for end-to-end traceability.
+- No cache layer for some api endpoints (e.g., balance, transaction history) — all queries hit the database directly. A real-world system might add Redis or similar for read-heavy endpoints.
+- No metrics or monitoring dashboards. In production, Prometheus/Grafana or similar would be added to track message throughput, failure rates, queue depth, etc.
+- Invalidation cache instead of refresh cache for price cache. Currently, the price cache is refreshed every 5 minutes, which may lead to stale prices if the database is updated in between. A more robust approach would be to invalidate the cache on price updates.
