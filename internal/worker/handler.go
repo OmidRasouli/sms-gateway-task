@@ -47,25 +47,33 @@ func NewHandler(messages MessageStore, balances BalanceStore, op OperatorSender)
 func (h *Handler) HandleSendMessage(ctx context.Context, payload []byte) error {
 	var p queue.SendMessagePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
+		log.Error().Err(err).Msg("unmarshal payload failed")
 		return fmt.Errorf("unmarshal payload: %w", err)
 	}
 
 	msg, err := h.messages.GetByID(ctx, p.MessageID)
 	if err != nil {
+		log.Error().Err(err).Str("message_id", p.MessageID.String()).Msg("load message failed")
 		return fmt.Errorf("load message: %w", err)
 	}
 
 	if msg.Status != domain.StatusPending {
 		// already processed by a previous attempt — idempotent no-op
+		log.Debug().Str("message_id", msg.ID.String()).Str("status", string(msg.Status)).Msg("skipping already-processed message")
 		return nil
 	}
+
+	log.Debug().Str("message_id", msg.ID.String()).Str("phone", msg.PhoneNumber).Msg("sending message via operator")
 
 	if err := h.operator.Send(ctx, msg.PhoneNumber, msg.Text); err != nil {
 		if errors.Is(err, operator.ErrOperatorPermanentFailure) {
 			// Unrecoverable failure: mark the message failed and reverse the
 			// balance deduction atomically so the user is refunded.
+			log.Error().Err(err).Str("message_id", msg.ID.String()).Msg("operator permanent failure, reversing balance")
 			if reverr := h.failAndReverse(ctx, msg); reverr != nil {
 				log.Error().Err(reverr).Str("message_id", msg.ID.String()).Msg("failed to reverse balance deduction")
+			} else {
+				log.Info().Str("message_id", msg.ID.String()).Str("user_id", msg.UserID.String()).Int64("amount", msg.Price).Msg("balance reversed after permanent failure")
 			}
 			return nil // do not retry
 		}
@@ -76,7 +84,13 @@ func (h *Handler) HandleSendMessage(ctx context.Context, payload []byte) error {
 		return err
 	}
 
-	return h.messages.UpdateStatus(ctx, msg.ID, domain.StatusSent)
+	if err := h.messages.UpdateStatus(ctx, msg.ID, domain.StatusSent); err != nil {
+		log.Error().Err(err).Str("message_id", msg.ID.String()).Msg("update status to sent failed")
+		return err
+	}
+
+	log.Info().Str("message_id", msg.ID.String()).Str("user_id", msg.UserID.String()).Str("type", string(msg.Type)).Msg("message sent successfully")
+	return nil
 }
 
 // failAndReverse marks a message as failed and reverses its balance deduction

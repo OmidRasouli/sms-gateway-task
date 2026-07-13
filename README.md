@@ -74,6 +74,8 @@ All configuration is via environment variables:
 | `NORMAL_CONCURRENCY` | `10` | Worker goroutines consuming `sms.normal` |
 | `PRICE_CACHE_REFRESH_INTERVAL` | `5m` | How often the in-memory price cache is refreshed from the DB |
 | `MAX_RETRY_ATTEMPTS` | `3` | Maximum Kafka consumer retry attempts before a message is sent to the DLQ |
+| `LOG_LEVEL` | `info` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
+| `LOG_FORMAT` | `json` | Log output format: `json` (structured, production) or `pretty` (human-readable console) |
 
 ## API Reference
 
@@ -251,6 +253,8 @@ make test-integration
 ```
 
 ## Key Design Decisions
+
+**Structured logging** — All components (API, worker, consumer loop) emit structured JSON logs via [zerolog](https://github.com/rs/zerolog). Each log line carries typed fields (`message_id`, `user_id`, `status`, `latency`, etc.) rather than interpolated strings, making log aggregation and alerting straightforward. Log level and format are runtime-configurable via `LOG_LEVEL` and `LOG_FORMAT`. Set `LOG_FORMAT=pretty` during local development for colour-coded, human-readable output.
 
 **Atomic balance deduction** — A single `UPDATE balances SET amount = amount - $1 WHERE user_id = $2 AND amount >= $1` runs in the same transaction as the message insert. This makes it impossible for the balance to go negative, even under high concurrency, without needing advisory locks or `SELECT FOR UPDATE`.
 

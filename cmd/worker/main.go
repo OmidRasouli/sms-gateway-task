@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/rs/zerolog/log"
 	"github.com/segmentio/kafka-go"
 
 	"github.com/OmidRasouli/sms-gateway-task/internal/config"
+	"github.com/OmidRasouli/sms-gateway-task/internal/logger"
 	"github.com/OmidRasouli/sms-gateway-task/internal/operator"
 	"github.com/OmidRasouli/sms-gateway-task/internal/queue"
 	"github.com/OmidRasouli/sms-gateway-task/internal/repository/postgres"
@@ -30,12 +31,14 @@ const consumerGroup = "sms-worker"
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		panic("config: " + err.Error())
 	}
+
+	logger.Setup(cfg.LogLevel, cfg.LogFormat)
 
 	pool, err := postgres.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("postgres: %v", err)
+		log.Fatal().Err(err).Msg("postgres: failed to connect")
 	}
 	defer pool.Close()
 
@@ -60,9 +63,9 @@ func main() {
 	startConsumers(ctx, &wg, brokers, queue.TopicExpress, cfg.ExpressQueueConcurrency, cfg.MaxRetryAttempts, handler, expressDLQ)
 	startConsumers(ctx, &wg, brokers, queue.TopicNormal, cfg.NormalQueueConcurrency, cfg.MaxRetryAttempts, handler, normalDLQ)
 
-	log.Println("worker started")
+	log.Info().Msg("worker started")
 	wg.Wait()
-	log.Println("worker stopped")
+	log.Info().Msg("worker stopped")
 }
 
 // startConsumers launches `concurrency` goroutines that each own a separate

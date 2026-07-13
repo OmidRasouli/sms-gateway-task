@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"log"
 	"math/rand"
 	"strconv"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -65,8 +65,7 @@ func processWithRetryAndDLQ(
 		if attempt > 1 {
 			select {
 			case <-ctx.Done():
-				log.Printf("consumer: ctx cancelled during retry backoff topic=%s partition=%d offset=%d",
-					msg.Topic, msg.Partition, msg.Offset)
+				log.Warn().Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: ctx cancelled during retry backoff")
 				return false
 			case <-time.After(backoffFunc(attempt - 1)):
 			}
@@ -75,27 +74,23 @@ func processWithRetryAndDLQ(
 		err := handleFn(ctx, msg.Value)
 		if err == nil {
 			if cerr := commitFn(ctx, msg); cerr != nil {
-				log.Printf("consumer: commit error topic=%s partition=%d offset=%d: %v",
-					msg.Topic, msg.Partition, msg.Offset, cerr)
+				log.Error().Err(cerr).Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: commit error")
 			}
 			return true
 		}
 
 		// If the context was cancelled, do not retry and do not commit.
 		if ctx.Err() != nil {
-			log.Printf("consumer: ctx cancelled after handler error topic=%s partition=%d offset=%d",
-				msg.Topic, msg.Partition, msg.Offset)
+			log.Warn().Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: ctx cancelled after handler error")
 			return false
 		}
 
 		lastErr = err
-		log.Printf("consumer: transient failure attempt=%d/%d topic=%s partition=%d offset=%d err=%v",
-			attempt, maxAttempts, msg.Topic, msg.Partition, msg.Offset, err)
+		log.Warn().Err(err).Int("attempt", attempt).Int("max_attempts", maxAttempts).Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: transient failure")
 	}
 
 	// All attempts exhausted — publish to the dead-letter topic.
-	log.Printf("consumer: retries exhausted, routing to DLQ topic=%s partition=%d offset=%d last_err=%v",
-		msg.Topic, msg.Partition, msg.Offset, lastErr)
+	log.Error().Err(lastErr).Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: retries exhausted, routing to DLQ")
 
 	dlqMsg := buildDLQMessage(msg, lastErr)
 
@@ -106,12 +101,10 @@ func processWithRetryAndDLQ(
 	for {
 		if err := dlq.WriteMessages(ctx, dlqMsg); err != nil {
 			if ctx.Err() != nil {
-				log.Printf("consumer: ctx cancelled while publishing to DLQ topic=%s partition=%d offset=%d",
-					msg.Topic, msg.Partition, msg.Offset)
+				log.Warn().Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: ctx cancelled while publishing to DLQ")
 				return false
 			}
-			log.Printf("consumer: DLQ PUBLISH FAILED (DATA LOSS RISK) — will retry in 5s topic=%s partition=%d offset=%d err=%v",
-				msg.Topic, msg.Partition, msg.Offset, err)
+			log.Error().Err(err).Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: DLQ PUBLISH FAILED (DATA LOSS RISK) — will retry in 5s")
 			select {
 			case <-ctx.Done():
 				return false
@@ -122,11 +115,10 @@ func processWithRetryAndDLQ(
 		break
 	}
 
-	log.Printf("consumer: message routed to DLQ topic=%s partition=%d offset=%d", msg.Topic, msg.Partition, msg.Offset)
+	log.Info().Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: message routed to DLQ")
 
 	if cerr := commitFn(ctx, msg); cerr != nil {
-		log.Printf("consumer: commit error after DLQ publish topic=%s partition=%d offset=%d: %v",
-			msg.Topic, msg.Partition, msg.Offset, cerr)
+		log.Error().Err(cerr).Str("topic", msg.Topic).Int("partition", msg.Partition).Int64("offset", msg.Offset).Msg("consumer: commit error after DLQ publish")
 	}
 	return true
 }

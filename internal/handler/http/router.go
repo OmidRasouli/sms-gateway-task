@@ -7,18 +7,53 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 )
 
 type kafkaPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// requestLogger is a structured zerolog middleware for Gin that logs each
+// request with method, path, status, latency, and client IP.
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+
+		c.Next()
+
+		// Skip health-check endpoints to reduce noise.
+		if path == "/livez" || path == "/readyz" {
+			return
+		}
+
+		latency := time.Since(start)
+		status := c.Writer.Status()
+
+		event := log.Info()
+		if status >= 500 {
+			event = log.Error()
+		} else if status >= 400 {
+			event = log.Warn()
+		}
+
+		event.
+			Str("method", c.Request.Method).
+			Str("path", path).
+			Int("status", status).
+			Dur("latency", latency).
+			Str("client_ip", c.ClientIP()).
+			Str("user_id", c.GetHeader("X-User-ID")).
+			Msg("request")
+	}
+}
+
 func NewRouter(msgHandler *MessageHandler, balHandler *BalanceHandler, db *pgxpool.Pool, kafka kafkaPinger) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/livez", "/readyz"},
-	}))
+	r.Use(requestLogger())
 	// Liveness: process is running
 	r.GET("/livez", func(c *gin.Context) { c.Status(http.StatusOK) })
 
