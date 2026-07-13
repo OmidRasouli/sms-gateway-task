@@ -281,9 +281,9 @@ func TestCharge_Concurrent(t *testing.T) {
 // 10 deduct goroutines (-60 each) against the same user simultaneously,
 // seeded with an initial balance of 100. The invariant is:
 //
-//	• The balance must never go negative (enforced by the CHECK constraint
-//	  and the WHERE amount >= $1 guard in DeductTx).
-//	• Every deduction that reports success must have been applied exactly once.
+//   - The balance must never go negative (enforced by the CHECK constraint
+//     and the WHERE amount >= $1 guard in DeductTx).
+//   - Every deduction that reports success must have been applied exactly once.
 func TestChargeAndDeduct_Concurrent(t *testing.T) {
 	pool := connectTestDB(t)
 	schema := applySchema(t, pool)
@@ -298,7 +298,7 @@ func TestChargeAndDeduct_Concurrent(t *testing.T) {
 	const deductAmount = int64(60)  // each deduction: 60
 
 	var (
-		wg             sync.WaitGroup
+		wg              sync.WaitGroup
 		deductSucceeded atomic.Int64
 	)
 
