@@ -74,7 +74,7 @@ CREATE TABLE %[1]s.balance_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
     amount BIGINT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('deduct','reverse')),
+    type TEXT NOT NULL CHECK (type IN ('deduct','reverse','charge')),
     message_id UUID REFERENCES %[1]s.messages(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -95,9 +95,11 @@ CREATE UNIQUE INDEX uq_bt_message_type_%[1]s
 	return schema
 }
 
-// newRepoInSchema returns a BalanceRepo whose queries target the given schema
-// by creating a new pool with search_path set to that schema.
-func newRepoInSchema(t *testing.T, _ *pgxpool.Pool, schema string) *postgres.BalanceRepo {
+// newPoolInSchema returns a pgxpool.Pool with search_path set to the given
+// schema. Callers that need to begin transactions inside the test schema must
+// use this pool (not the main pool) so that unqualified table references in
+// queries resolve to the test schema rather than public.
+func newPoolInSchema(t *testing.T, schema string) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DB_DSN")
 	cfg, err := pgxpool.ParseConfig(dsn + "&search_path=" + schema)
@@ -109,7 +111,14 @@ func newRepoInSchema(t *testing.T, _ *pgxpool.Pool, schema string) *postgres.Bal
 		t.Fatalf("pool with schema: %v", err)
 	}
 	t.Cleanup(p.Close)
-	return postgres.NewBalanceRepo(p)
+	return p
+}
+
+// newRepoInSchema returns a BalanceRepo whose queries target the given schema
+// by creating a new pool with search_path set to that schema.
+func newRepoInSchema(t *testing.T, _ *pgxpool.Pool, schema string) *postgres.BalanceRepo {
+	t.Helper()
+	return postgres.NewBalanceRepo(newPoolInSchema(t, schema))
 }
 
 // seedBalance inserts a balance row for userID directly.
@@ -160,6 +169,7 @@ func TestDeductTx_Concurrent(t *testing.T) {
 	pool := connectTestDB(t)
 	schema := applySchema(t, pool)
 	repo := newRepoInSchema(t, pool, schema)
+	schemaPool := newPoolInSchema(t, schema)
 
 	userID := uuid.New()
 	seedBalance(t, pool, schema, userID, 100)
@@ -188,7 +198,7 @@ func TestDeductTx_Concurrent(t *testing.T) {
 				return
 			}
 
-			tx, err := pool.Begin(ctx)
+			tx, err := schemaPool.Begin(ctx)
 			if err != nil {
 				errs[i] = err
 				return
@@ -232,6 +242,131 @@ func TestDeductTx_Concurrent(t *testing.T) {
 	}
 }
 
+// TestCharge_Concurrent spawns 10 goroutines each charging the same user 100
+// units simultaneously. The UPSERT must be atomic: the final balance must be
+// exactly 1000 (10 × 100) with no lost updates.
+func TestCharge_Concurrent(t *testing.T) {
+	pool := connectTestDB(t)
+	schema := applySchema(t, pool)
+	repo := newRepoInSchema(t, pool, schema)
+
+	userID := uuid.New()
+	const goroutines = 10
+	const chargeAmount = int64(100)
+
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = repo.Charge(context.Background(), userID, chargeAmount)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if bal := currentBalance(t, pool, schema, userID); bal != goroutines*chargeAmount {
+		t.Errorf("expected balance %d, got %d", goroutines*chargeAmount, bal)
+	}
+}
+
+// TestChargeAndDeduct_Concurrent runs 5 charge goroutines (+100 each) and
+// 10 deduct goroutines (-60 each) against the same user simultaneously,
+// seeded with an initial balance of 100. The invariant is:
+//
+//	• The balance must never go negative (enforced by the CHECK constraint
+//	  and the WHERE amount >= $1 guard in DeductTx).
+//	• Every deduction that reports success must have been applied exactly once.
+func TestChargeAndDeduct_Concurrent(t *testing.T) {
+	pool := connectTestDB(t)
+	schema := applySchema(t, pool)
+	repo := newRepoInSchema(t, pool, schema)
+
+	userID := uuid.New()
+	seedBalance(t, pool, schema, userID, 100)
+
+	const chargeGoroutines = 5
+	const deductGoroutines = 10
+	const chargeAmount = int64(100) // total added: 500
+	const deductAmount = int64(60)  // each deduction: 60
+
+	var (
+		wg             sync.WaitGroup
+		deductSucceeded atomic.Int64
+	)
+
+	// Launch charge goroutines.
+	for i := 0; i < chargeGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := repo.Charge(context.Background(), userID, chargeAmount); err != nil {
+				t.Errorf("Charge: unexpected error: %v", err)
+			}
+		}()
+	}
+
+	// Launch deduct goroutines.
+	deductErrs := make([]error, deductGoroutines)
+	for i := 0; i < deductGoroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx := context.Background()
+			msgID := uuid.New()
+			_, insertErr := pool.Exec(ctx,
+				fmt.Sprintf(`INSERT INTO %s.messages (id, user_id, phone_number, text, message_type, price)
+				             VALUES ($1, $2, '09000000000', 'test', 'normal', %d)`, schema, deductAmount),
+				msgID, userID,
+			)
+			if insertErr != nil {
+				deductErrs[i] = insertErr
+				return
+			}
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				deductErrs[i] = err
+				return
+			}
+			defer tx.Rollback(ctx) //nolint:errcheck
+			err = repo.DeductTx(ctx, tx, userID, msgID, deductAmount)
+			if err == domain.ErrInsufficientBalance {
+				deductErrs[i] = err
+				return
+			}
+			if err != nil {
+				deductErrs[i] = err
+				return
+			}
+			if err := tx.Commit(ctx); err != nil {
+				deductErrs[i] = err
+				return
+			}
+			deductSucceeded.Add(1)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range deductErrs {
+		if err != nil && err != domain.ErrInsufficientBalance {
+			t.Errorf("deduct goroutine %d: unexpected error: %v", i, err)
+		}
+	}
+
+	// final balance = 100 (seed) + 500 (charges) - succeeded*60
+	expected := int64(100) + chargeGoroutines*chargeAmount - deductSucceeded.Load()*deductAmount
+	if bal := currentBalance(t, pool, schema, userID); bal != expected {
+		t.Errorf("expected balance %d, got %d (deductions succeeded: %d)", expected, bal, deductSucceeded.Load())
+	}
+}
+
 // TestDeductTx_Idempotent verifies that calling DeductTx twice with the same
 // messageID returns ErrAlreadyProcessed on the second call and does not deduct
 // the balance a second time.
@@ -239,6 +374,7 @@ func TestDeductTx_Idempotent(t *testing.T) {
 	pool := connectTestDB(t)
 	schema := applySchema(t, pool)
 	repo := newRepoInSchema(t, pool, schema)
+	schemaPool := newPoolInSchema(t, schema)
 
 	ctx := context.Background()
 	userID := uuid.New()
@@ -246,7 +382,7 @@ func TestDeductTx_Idempotent(t *testing.T) {
 	msgID := seedMessage(t, pool, schema, userID)
 
 	// First deduction — should succeed.
-	tx1, err := pool.Begin(ctx)
+	tx1, err := schemaPool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +399,7 @@ func TestDeductTx_Idempotent(t *testing.T) {
 	}
 
 	// Second deduction with the same messageID — should return ErrAlreadyProcessed.
-	tx2, err := pool.Begin(ctx)
+	tx2, err := schemaPool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
