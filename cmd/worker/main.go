@@ -21,8 +21,9 @@ import (
 
 func newDLQWriter(brokers []string, topic string) *kafka.Writer {
 	return &kafka.Writer{
-		Addr:  kafka.TCP(brokers...),
-		Topic: topic,
+		Addr:                   kafka.TCP(brokers...),
+		Topic:                  topic,
+		AllowAutoTopicCreation: true,
 	}
 }
 

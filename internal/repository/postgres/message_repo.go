@@ -41,9 +41,9 @@ func (r *MessageRepo) CreateTx(ctx context.Context, tx pgx.Tx, m *domain.Message
 func (r *MessageRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.MessageStatus) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE messages
-		SET status = $1, sent_at = CASE WHEN $1 = 'sent' THEN now() ELSE sent_at END
-		WHERE id = $2`,
-		status, id,
+		SET status = $1, sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE sent_at END
+		WHERE id = $3`,
+		status, status, id,
 	)
 	return err
 }
@@ -54,9 +54,9 @@ func (r *MessageRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status dom
 func (r *MessageRepo) UpdateStatusTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.MessageStatus) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE messages
-		SET status = $1, sent_at = CASE WHEN $1 = 'sent' THEN now() ELSE sent_at END
-		WHERE id = $2`,
-		status, id,
+		SET status = $1, sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE sent_at END
+		WHERE id = $3`,
+		status, status, id,
 	)
 	return err
 }
