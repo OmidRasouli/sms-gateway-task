@@ -266,6 +266,36 @@ make test-integration
 
 **Per-user partition keying** — Kafka messages are keyed by `userID` (not `messageID`), so all messages for a given user land on the same partition and are consumed in submission order by a single worker goroutine. Balance deduction happens synchronously in the API transaction, not in the worker, so this ordering isn't required for deduction correctness. It's kept instead as a foundation for future per-user fairness/rate-limiting (noted in Known Limitations as not yet implemented) — without per-user ordering, a fairness mechanism can't reason about a user's message sequence. The trade-off is partition hotspotting: a small number of high-volume users can concentrate load on a few partitions rather than spreading evenly across all of them.
 
+## Scale & Capacity
+
+These are back-of-envelope estimates based on stated design targets, not measured benchmarks. All assumptions are noted inline.
+
+**Throughput target**
+
+100 M messages/day averages to ~**1,160 msg/sec**. Assuming a 3×–5× peak-to-average ratio during business hours (a common rule of thumb for B2B messaging), the system needs to sustain roughly **3,500–5,800 msg/sec at peak**.
+
+**Worker goroutines needed**
+
+Assuming each delivery call to the operator (network round-trip + DB status update) takes ~**50 ms** end-to-end, a single goroutine can process ~20 msg/sec. To hit the ~5,800 msg/sec peak requires ~**290 goroutines** total across both topics. The current defaults (`EXPRESS_CONCURRENCY=15`, `NORMAL_CONCURRENCY=10` → 25 total) are sized for development/demo use and would need to be scaled out significantly.
+
+| Scenario | Avg msg/sec | Peak msg/sec (5×) | Goroutines needed (@ 50 ms/msg) |
+|---|---|---|---|
+| Current defaults (1 instance) | — | — | 25 |
+| 100 M/day, 1 worker pod | 1,160 | ~5,800 | ~290 |
+| 100 M/day, 10 worker pods | 1,160 | ~5,800 | ~29 per pod |
+
+**Horizontal scaling**
+
+Worker instances join the same Kafka consumer group, so Kafka distributes partitions across them automatically. **Partition count is the hard ceiling on parallelism** — a partition is only ever consumed by one goroutine at a time within the group, so the number of partitions must be at least as large as the number of concurrent goroutines the system needs. To support the ~290 goroutines above, each topic needs partition counts in that same order of magnitude, split roughly in proportion to the current 15:10 express/normal concurrency ratio — e.g. ~**170 partitions on `sms.express`** and ~**115 on `sms.normal`**, rather than a fixed 32–64 regardless of target load. Scaling is then a matter of increasing `EXPRESS_CONCURRENCY`/`NORMAL_CONCURRENCY` and spinning up additional worker pods until the partition ceiling is reached.
+
+**Partition hotspotting at scale**
+
+With `userID`-based keying, a user sending a disproportionate share of traffic monopolises one partition. At 100 M/day, if the top 1% of senders account for 30–50% of volume (a rough power-law assumption), those partitions will run 30–50× hotter than average, bottlenecking throughput and adding latency for every other user sharing that partition. Mitigation options include composite keys (`userID + bucket`), message-ID keying with ordering relaxed, or per-user rate limiting — none of which are currently implemented (see Known Limitations).
+
+**PostgreSQL write throughput**
+
+Each message involves four writes: three in the API's transaction (message insert, balance deduction, and the immutable `balance_transactions` ledger insert) plus one status update from the worker after delivery. At the ~3,500–5,800 msg/sec peak, that's roughly **14,000–23,000 writes/sec** the database needs to sustain. Reaching this comfortably requires connection pooling (PgBouncer in transaction mode), vertical scaling of the PostgreSQL instance, and potentially read replicas for the query endpoints — detailed DB tuning is out of scope for this challenge.
+
 ## Known Limitations
 
 - Mock operator only — no real telecom integration.
