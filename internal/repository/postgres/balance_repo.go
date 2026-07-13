@@ -82,9 +82,9 @@ func (r *BalanceRepo) Charge(ctx context.Context, userID uuid.UUID, amount int64
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO balance_transactions (user_id, amount)
-		VALUES ($1, $2)`,
-		userID, amount,
+		INSERT INTO balance_transactions (user_id, amount, type)
+		VALUES ($1, $2, $3)`,
+		userID, amount, domain.TransactionTypeCharge,
 	)
 	if err != nil {
 		return 0, err

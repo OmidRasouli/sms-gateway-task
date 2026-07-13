@@ -12,6 +12,7 @@ import (
 type BalanceTransactionType string
 
 const (
+	TransactionTypeCharge  BalanceTransactionType = "charge"
 	TransactionTypeDeduct  BalanceTransactionType = "deduct"
 	TransactionTypeReverse BalanceTransactionType = "reverse"
 )
